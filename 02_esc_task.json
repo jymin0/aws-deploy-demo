@@ -1,0 +1,106 @@
+{
+  "family": "file-management-task",
+  "containerDefinitions": [
+    {
+      "cpu": 1024,
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "ap-northeast-2"
+        },
+        {
+          "name": "AWS_S3_BUCKET",
+          "value": "my-server-bucket-42174"
+        },
+        {
+          "name": "DB_USERNAME",
+          "value": "user1"
+        },
+        {
+          "name": "DB_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "AWS_SECRET_KEY",
+          "value": "MjiZe0cxe0VpwwR6UhD0JLnPY+nOMJWWBu6B04yO"
+        },
+        {
+          "name": "DB_NAME",
+          "value": "aws-test"
+        },
+        {
+          "name": "AWS_ACCESS_KEY",
+          "value": "AKIASIRCTB6BQZMTB5M3"
+        },
+        {
+          "name": "DB_HOST",
+          "value": "database-1.cbeakqkysvjl.ap-northeast-2.rds.amazonaws.com"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "value": "user1password"
+        }
+      ],
+      "environmentFiles": [],
+      "essential": true,
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "wget -q --spider http://localhost:8080/actuator/health || exit 1"
+        ],
+        "interval": 30,
+        "retries": 3,
+        "startPeriod": 60,
+        "timeout": 5
+      },
+      "image": "155765116803.dkr.ecr.ap-northeast-2.amazonaws.com/dev/my-repo@sha256:b15d651c9cc03cac49efa30d8a888f0f7113a60faaaf6d56d7ef870b670a8c52",
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/file-management-task",
+          "awslogs-create-group": "true",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        },
+        "secretOptions": []
+      },
+      "mountPoints": [],
+      "name": "file-management-task",
+      "portMappings": [
+        {
+          "appProtocol": "http",
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "name": "file-management-task-8080-tcp",
+          "protocol": "tcp"
+        },
+        {
+          "containerPort": 5432,
+          "hostPort": 5432,
+          "name": "postgres",
+          "protocol": "tcp"
+        }
+      ],
+      "systemControls": [],
+      "ulimits": [],
+      "volumesFrom": []
+    }
+  ],
+  "executionRoleArn": "arn:aws:iam::155765116803:role/ecsTaskExecutionRole",
+  "networkMode": "awsvpc",
+  "volumes": [],
+  "placementConstraints": [],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "1024",
+  "memory": "3072",
+  "ephemeralStorage": {
+    "sizeInGiB": 21
+  },
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "enableFaultInjection": false
+}
