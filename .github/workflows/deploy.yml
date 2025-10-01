@@ -1,117 +1,104 @@
-name: Deploy to Amazon ECS
+# ================================
+# Secrets (보안값, Environment secrets)
+# AWS_ACCOUNT_ID     : AWS 계정 ID(228282822)
+# AWS_ACCESS_KEY     : IAM 사용자의 Access Key ID
+# AWS_SECRET_KEY     : IAM 사용자의 Secret Access Key
+#
+# Vars (일반 변수, Environment variables)
+# AWS_REGION         : 배포할 리전 (예: ap-northeast-2)
+# ECR_REPOSITORY     : 리포지토리 이름
+# ECS_TASK_DEFINITION: 태스크 정의 이름 (예: file-management-task)
+# ECS_CLUSTER        : ECS 클러스터 이름 (예: file-management-cluster)
+# ECS_SERVICE        : ECS 서비스 이름 (예: file-management-service)
+# ================================
+name: 배포
 
 on:
   push:
-    branches: [ main ] # main 브런치에 push가 되면 자동으로 배포
-  workflow_dispatch:  # 수동으로 배포가능!
+    branches:
+      - release
+  workflow_dispatch:
 
-# 환경변수를 선언 가능
-env:
-  AWS_REGION: ap-northeast-2
-  ECR_REPOSITORY: dev/my-repo
-  ECS_CLUSTER: file-management-cluster
-  ECS_SERVICE: file-management-service
-  ECS_TASK_DEFINITION: file-management-task
-  CONTAINER_NAME: file-management-app
-
-# 환경 변수 권한
-permissions:
-  contents: read
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy
+  build-and-push:
+    environment: prod
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ github.sha }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      - name: AWS CLI 설정
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Build with Gradle
-        run: ./gradlew build -x test
-
-      - name: Set environment variables
-        run: |
-          echo "ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(date +'%Y%m%d%H%M%S')-${GITHUB_SHA::8}" >> $GITHUB_ENV
-
-      # 배포용 AWS 자격 증명 구성
-      - name: Configure AWS credentials for deployment
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_DEPLOY_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_DEPLOY_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
+      - name: ECR 로그인
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and tag Docker image
+      - name: Docker 이미지 빌드 및 푸시
         run: |
-          docker build \
-            --build-arg SPRING_PROFILES_ACTIVE=prod \
-            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
-          docker tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY }}
 
-      - name: Push Docker image to ECR
-        run: |
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          docker buildx build \
+            -t $ECR_URI:${{ github.sha }} \
+            -t $ECR_URI:latest \
+            --push \
+            .
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
 
-      - name: Download task definition
+    steps:
+      - name: AWS CLI 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECS 태스크 정의 업데이트
         run: |
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY }}
+
+          TASK_DEFINITION=$(
           aws ecs describe-task-definition \
-            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
-            --query taskDefinition > task-definition.json
+            --task-definition ${{ vars.ECS_TASK_DEFINITION }}
+          )
 
-      - name: Strip unsupported keys for older SDK
+          NEW_TASK_DEFINITION=$(
+          echo $TASK_DEFINITION | jq \
+            --arg IMAGE "$ECR_URI:latest" \
+            '.taskDefinition | .containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)'
+          )
+
+          NEW_TASK_DEF_ARN=$(
+            aws ecs register-task-definition \
+              --cli-input-json "$NEW_TASK_DEFINITION" | \
+            jq -r '.taskDefinition.taskDefinitionArn'
+          )
+
+          echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: ECS 서비스 중지(프리티어 환경 고려)
         run: |
-          jq 'del(.enableFaultInjection)' task-definition.json > task-definition.clean.json
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --service ${{ vars.ECS_SERVICE }} \
+            --desired-count 0
 
-      - name: Fill in new image
-        id: render-task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.clean.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-
-      - name: Deploy to Amazon ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
-      - name: Verify deployment
+      - name: ECS 서비스 업데이트
         run: |
-          echo "Waiting for service stability..."
-          aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }}
-          
-          echo "Checking service running count..."
-          RUNNING_COUNT=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --query 'services[0].runningCount' --output text)
-          DESIRED_COUNT=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --query 'services[0].desiredCount' --output text)
-          
-          echo "Running tasks: $RUNNING_COUNT / $DESIRED_COUNT"
-          
-          if [ "$RUNNING_COUNT" -eq "$DESIRED_COUNT" ] && [ "$RUNNING_COUNT" -gt 0 ]; then
-            echo "✅ Deployment successful!"
-          else
-            echo "❌ Deployment failed. Check ECS console for details."
-            exit 1
-          fi
-
-
-
-
-
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --service ${{ vars.ECS_SERVICE }} \
+            --task-definition $NEW_TASK_DEF_ARN \
+            --desired-count 1 \
+            --force-new-deployment
