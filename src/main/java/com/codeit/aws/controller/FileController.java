@@ -28,6 +28,7 @@ public class FileController {
         log.info("Received file upload request: filename={}, description={}",
                 file.getOriginalFilename(), description);
 
+        log.info("Hello World!");
         FileResponseDto response = fileService.uploadFile(file, description);
         return ResponseEntity.ok(response);
     }
